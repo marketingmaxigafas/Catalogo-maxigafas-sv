@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>CATÁLOGO MAXIGAFAS</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="header">
+  <div class="brand-area"><div class="logo-slot"><img id="brandLogo" src="logo-maxigafas.png" alt="MAXIGAFAS"></div></div>
+  <div class="header-tools">
+    <div class="search-wrap"><span>⌕</span><input id="search" placeholder="BUSCAR REFERENCIA, MARCA, MODELO, MEDIDA..." autocomplete="off"></div>
+    <div class="catalog-sort-controls" aria-label="ORDENAR Y FILTRAR CATÁLOGO">
+      <span class="sort-label">ORDENAR POR</span>
+      <select id="sortCategory" aria-label="CATEGORÍA"><option value="TODAS">CATEGORÍA: TODAS</option></select>
+      <select id="sortSubcategory" aria-label="SUBCATEGORÍA"><option value="TODAS">SUBCATEGORÍA: TODAS</option></select>
+      <select id="sortDiscount" aria-label="DESCUENTO">
+        <option value="none">DESCUENTO</option>
+        <option value="discount_desc">MAYOR DESCUENTO → MENOR</option>
+        <option value="discount_asc">MENOR DESCUENTO → MAYOR</option>
+      </select>
+    </div>
+  </div>
+</header>
+
+<div id="adminBar" class="admin-bar hidden"><span>● MODO ADMINISTRADOR ACTIVO</span><button id="logoutBtn">CERRAR SESIÓN</button></div>
+
+<main>
+
+
+  <div class="catalog-layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">CATEGORÍAS</div>
+      <div id="accordion"></div>
+    </aside>
+    <section class="catalog-content">
+      <div class="toolbar"><span id="count"></span><select id="sort"><option value="new">MÁS RECIENTES</option><option value="az">REFERENCIA A–Z</option><option value="za">REFERENCIA Z–A</option></select></div>
+      <section id="grid" class="grid"></section>
+    </section>
+  </div>
+</main>
+
+<div id="modal" class="modal hidden"><div class="modal-card"><button class="close">×</button><div id="modalContent"></div></div></div>
+
+<div id="loginModal" class="modal hidden"><div class="login-card"><button class="close">×</button><div class="login-logo"><img src="logo-maxigafas.png"></div><h2>ACCESO ADMINISTRADOR</h2><p>INGRESA PARA GESTIONAR EL CATÁLOGO.</p><input id="adminUser" placeholder="CORREO DEL ADMINISTRADOR" autocomplete="username"><input id="adminPass" type="password" placeholder="CONTRASEÑA" autocomplete="current-password"><button id="loginSubmit" class="primary-btn">INGRESAR</button><div id="loginError" class="login-error"></div></div></div>
+
+<div id="admin" class="modal hidden"><div class="admin-card"><button class="close">×</button><div class="admin-head"><div><p>GESTIÓN DE CATÁLOGO</p><h2>ADMINISTRADOR</h2></div></div>
+  <div class="admin-actions"><button id="importBtn" class="primary-btn">IMPORTAR FOTOS</button><button id="addBtn" class="secondary-btn">AGREGAR PRODUCTO</button><button id="exportBtn" class="secondary-btn">EXPORTAR CATÁLOGO</button></div>
+  <input id="fileInput" type="file" accept="image/*" multiple hidden><input id="folderInput" type="file" accept="image/*" webkitdirectory directory multiple hidden>
+  <div id="productForm" class="form hidden">
+    <div class="form-title"><span id="formTitle">NUEVO PRODUCTO</span><button id="cancelEdit" class="text-btn">CANCELAR</button></div>
+    <div class="photo-upload"><div id="previewSlots" class="preview-slots"></div><label class="upload-box">+ AGREGAR FOTOS (MÁX. 3)<input id="pImages" type="file" accept="image/*" multiple hidden></label></div>
+    <div id="cropEditor" class="crop-editor hidden">
+      <div class="crop-editor-head">
+        <div><strong>AJUSTAR PREVISUALIZACIÓN</strong><small>LA IMAGEN ORIGINAL NO SE MODIFICA. SOLO CAMBIA CÓMO SE VE EN LA TARJETA.</small></div>
+        <div style="display:flex;gap:8px;align-items:center"><button id="cropSave" type="button" class="primary-btn crop-save-btn">GUARDAR AJUSTE</button><button id="cropReset" type="button" class="text-btn">RESTABLECER</button></div>
+      </div>
+      <div id="cropImageSelect" class="crop-image-select"></div>
+      <div class="crop-workspace">
+        <div class="crop-stage"><img id="cropStageImg" src="" alt="PREVISUALIZACIÓN"></div>
+        <div class="crop-controls">
+          <label>POSICIÓN HORIZONTAL <output id="cropXValue">0%</output><input id="cropX" type="range" min="0" max="100" value="0"></label>
+          <label>POSICIÓN VERTICAL <output id="cropYValue">50%</output><input id="cropY" type="range" min="0" max="100" value="50"></label>
+          <label>ZOOM <output id="cropZoomValue">155%</output><input id="cropZoom" type="range" min="100" max="250" value="155"></label>
+          <p>CON ESTOS CONTROLES PUEDES DEJAR LAS GAFAS CENTRADAS, MOVERLAS HACIA LA IZQUIERDA/DERECHA Y ACERCARLAS SIN ALTERAR LA FOTO ORIGINAL.</p>
+        </div>
+      </div>
+    </div>
+    <div class="form-grid">
+      <label>REFERENCIA<input id="pRef"></label>
+      <label>MARCA<input id="pBrand" placeholder="EJ. NYRON"></label>
+      <label>MODELO<input id="pModel"></label>
+      <label>MEDIDAS<input id="pMeasures" placeholder="EJ. 52□18-140"></label>
+      <label>MATERIAL<input id="pMaterial" placeholder="EJ. ACETATO"></label>
+      <label>CATEGORÍA<select id="pCat"></select></label>
+      <label>SUBCATEGORÍA<select id="pSubcat"></select></label>
+      <label>PRECIO<input id="pPrice" type="number" min="0"></label>
+      <label class="promo-toggle"><span>NOVEDAD · NUEVA COLECCIÓN</span><input id="pNovedad" type="checkbox"></label>
+      <label class="promo-toggle"><span>PROMOCIÓN ACTIVA</span><input id="pPromoActive" type="checkbox"></label>
+      <div id="promotionFields" class="promotion-fields full hidden">
+        <label>NOMBRE DE PROMOCIÓN<input id="pPromoName" placeholder="EJ. BLACK NOVEMBER"></label>
+        <label>TIPO DE DESCUENTO<select id="pDiscountType"><option value="PORCENTAJE">PORCENTAJE</option><option value="VALOR_FIJO">VALOR FIJO</option></select></label>
+        <label>VALOR DEL DESCUENTO<input id="pPromoValue" type="number" min="0"></label>
+        <label>FECHA INICIO<input id="pPromoStart" type="date"></label>
+        <label>FECHA FIN<input id="pPromoEnd" type="date"></label>
+      </div>
+      <label class="full">DESCRIPCIÓN<textarea id="pDesc"></textarea></label>
+    </div>
+    <button id="saveProduct" class="primary-btn">GUARDAR PRODUCTO</button>
+  </div>
+  <div id="adminList" class="admin-list"></div><div id="importInfo" class="import-info"></div>
+</div></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="app.js"></script>
+</body></html>

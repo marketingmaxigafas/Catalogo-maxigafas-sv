@@ -1,0 +1,811 @@
+/*
+  CATÁLOGO MAXIGAFAS
+  Frontend: GitHub Pages
+  Backend: Supabase Database + Storage + Auth
+*/
+
+const SUPABASE_URL = 'https://uogzajftwsbpksxycqxg.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_KA6LePbB6PhM88v9uL2WAw_2aZCpR1q';
+const ADMIN_UID = '39d58d6f-375b-4fe3-897c-9098418dd0f4';
+const STORAGE_BUCKET = 'productos';
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+const $ = s => document.querySelector(s);
+const grid = $('#grid');
+
+let products = [];
+let brands = [];
+let categories = [];
+let subcategories = [];
+let activeCat = 'TODAS';
+let activeSub = 'TODAS';
+let editingId = null;
+let selectedImages = [];
+let cropIndex = 0;
+let previewSettings = [];
+let currentSession = null;
+
+function escapeHtml(v = '') {
+  return String(v).replace(/[&<>'"]/g, c => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;'
+  }[c]));
+}
+
+function normalize(v) {
+  return String(v || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function normalizeNullable(v) {
+  const value = normalize(v).trim();
+  return value || null;
+}
+
+function defaultPreview() { return { x: 0, y: 50, zoom: 1.55 }; }
+
+function previewCss(c) {
+  c = c || defaultPreview();
+  return `--px:${Number(c.x ?? 0)}%;--py:${Number(c.y ?? 50)}%;--pz:${Number(c.zoom ?? 1.55)}`;
+}
+
+function getCategoryName(id) {
+  return categories.find(c => c.id === id)?.name || '';
+}
+
+function getSubcategoryName(id) {
+  return subcategories.find(s => s.id === id)?.name || '';
+}
+
+function getBrandName(id) {
+  return brands.find(b => b.id === id)?.name || '';
+}
+
+async function resolveBrandId(name) {
+  const brandName = normalizeNullable(name);
+  if (!brandName) return null;
+
+  const existing = brands.find(b => normalize(b.name) === normalize(brandName));
+  if (existing) return existing.id;
+
+  const { data, error } = await sb
+    .from('brands')
+    .insert({
+      name: brandName,
+      is_active: true,
+      display_order: brands.length + 1
+    })
+    .select('*')
+    .single();
+
+  if (error) {
+    // Si otro registro creó la misma marca al mismo tiempo, intentamos recuperarla.
+    const retry = await sb.from('brands').select('*').eq('name', brandName).maybeSingle();
+    if (!retry.error && retry.data) {
+      brands.push(retry.data);
+      return retry.data.id;
+    }
+    throw error;
+  }
+
+  brands.push(data);
+  return data.id;
+}
+
+function getSubcats(categoryId) {
+  return subcategories.filter(s => s.category_id === categoryId).sort((a,b) => (a.display_order ?? 0) - (b.display_order ?? 0) || a.name.localeCompare(b.name));
+}
+
+function getCurrentCategory() {
+  return categories.find(c => c.name === activeCat);
+}
+
+function isAdmin() {
+  return Boolean(currentSession?.user?.id === ADMIN_UID);
+}
+
+function setAdminUi(active) {
+  const bar = $('#adminBar');
+  const btn = $('#adminBtn');
+  if (bar) bar.classList.toggle('hidden', !active);
+
+  // El botón de gestión solo existe funcionalmente en el portal de administración
+  // y únicamente se muestra después de autenticar al administrador.
+  if (btn) {
+    btn.textContent = 'GESTIONAR CATÁLOGO';
+    if (document.body.classList.contains('admin-portal')) {
+      btn.classList.toggle('hidden', !active);
+    } else {
+      btn.classList.add('hidden');
+    }
+  }
+}
+
+function showError(message) {
+  console.error(message);
+  alert(String(message).toUpperCase());
+}
+
+async function loadReferenceData() {
+  const [catsRes, subsRes, brandsRes] = await Promise.all([
+    sb.from('categories').select('*').eq('is_active', true).order('display_order').order('name'),
+    sb.from('subcategories').select('*').eq('is_active', true).order('display_order').order('name'),
+    sb.from('brands').select('*').eq('is_active', true).order('display_order').order('name')
+  ]);
+
+  if (catsRes.error) throw catsRes.error;
+  if (subsRes.error) throw subsRes.error;
+  if (brandsRes.error) throw brandsRes.error;
+
+  categories = catsRes.data || [];
+  subcategories = subsRes.data || [];
+  brands = brandsRes.data || [];
+}
+
+async function loadProducts() {
+  const { data, error } = await sb
+    .from('products')
+    .select('*')
+    .eq('activo', true)
+    .eq('visible', true)
+    .order('orden_visualizacion', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+
+  const ids = (data || []).map(p => p.id);
+  let imageRows = [];
+  if (ids.length) {
+    const { data: imgs, error: imgError } = await sb
+      .from('product_images')
+      .select('*')
+      .in('product_id', ids)
+      .order('image_order');
+    if (imgError) throw imgError;
+    imageRows = imgs || [];
+  }
+
+  const byProduct = {};
+  imageRows.forEach(img => {
+    (byProduct[img.product_id] ||= []).push(img);
+  });
+
+  products = (data || []).map(p => {
+    const imgs = (byProduct[p.id] || []).sort((a,b) => a.image_order - b.image_order);
+    return {
+      id: p.id,
+      ref: p.referencia || '',
+      brandId: p.brand_id,
+      brand: getBrandName(p.brand_id),
+      model: p.modelo || '',
+      measures: p.medidas || '',
+      material: p.material || '',
+      categoryId: p.category_id,
+      category: getCategoryName(p.category_id),
+      subcategoryId: p.subcategory_id,
+      subcategory: getSubcategoryName(p.subcategory_id),
+      desc: p.descripcion || '',
+      price: p.precio_base ?? '',
+      promoActive: Boolean(p.promocion_activa),
+      promoName: p.nombre_promocion || '',
+      discountType: p.tipo_descuento || 'PORCENTAJE',
+      discountValue: p.valor_descuento ?? '',
+      promoStart: p.fecha_inicio_promocion || '',
+      promoEnd: p.fecha_fin_promocion || '',
+      stock: p.stock ?? 0,
+      showStock: Boolean(p.mostrar_stock),
+      destacado: Boolean(p.destacado),
+      novedad: Boolean(p.novedad),
+      order: p.orden_visualizacion ?? 0,
+      createdAt: p.created_at,
+      images: imgs.map(i => i.image_url),
+      imageRecords: imgs,
+      preview: imgs.map(i => ({ x: Number(i.preview_x ?? 0), y: Number(i.preview_y ?? 50), zoom: Number(i.preview_zoom ?? 1.55) }))
+    };
+  });
+}
+
+function allCats() { return ['TODAS', ...categories.map(c => c.name)]; }
+
+function renderAccordion() {
+  const el = $('#accordion');
+  el.innerHTML = `<button class="accordion-head ${activeCat === 'TODAS' ? 'active-all' : ''}" data-cat="TODAS"><span>TODOS LOS PRODUCTOS</span><span class="chev">›</span></button>` +
+    categories.map(cat => {
+      const open = cat.name === activeCat;
+      const subs = getSubcats(cat.id);
+      return `<div class="accordion-item ${open ? 'open' : ''}">
+        <button class="accordion-head" data-cat="${escapeHtml(cat.name)}"><span>${escapeHtml(cat.name)}</span><span class="chev">+</span></button>
+        <div class="accordion-body">${subs.length
+          ? subs.map(s => `<button class="subcat ${open && s.name === activeSub ? 'active' : ''}" data-cat="${escapeHtml(cat.name)}" data-sub="${escapeHtml(s.name)}">${escapeHtml(s.name)}</button>`).join('')
+          : `<button class="subcat ${open && activeSub === 'TODAS' ? 'active' : ''}" data-cat="${escapeHtml(cat.name)}" data-sub="TODAS">VER TODOS</button>`
+        }</div>
+      </div>`;
+    }).join('');
+
+  el.querySelector('[data-cat="TODAS"]').onclick = () => {
+    activeCat = 'TODAS'; activeSub = 'TODAS'; renderAccordion(); render();
+  };
+  el.querySelectorAll('.accordion-head[data-cat]').forEach(btn => btn.onclick = () => {
+    const cat = btn.dataset.cat;
+    if (activeCat === cat) { activeCat = 'TODAS'; activeSub = 'TODAS'; }
+    else { activeCat = cat; activeSub = 'TODAS'; }
+    renderAccordion(); render();
+  });
+  el.querySelectorAll('.subcat').forEach(btn => btn.onclick = () => {
+    activeCat = btn.dataset.cat; activeSub = btn.dataset.sub; renderAccordion(); render();
+  });
+}
+
+function discountPercent(p) {
+  const base = Number(p.price || 0);
+  const value = Number(p.discountValue || 0);
+  if (!p.promoActive || !base || value <= 0) return 0;
+  return p.discountType === 'VALOR_FIJO' ? Math.max(0, Math.min(100, (value / base) * 100)) : Math.max(0, Number(value));
+}
+
+function populateCatalogSortControls() {
+  const cat = $('#sortCategory');
+  const sub = $('#sortSubcategory');
+  if (!cat || !sub) return;
+
+  const currentCat = activeCat;
+  const currentSub = activeSub;
+  cat.innerHTML = '<option value="TODAS">CATEGORÍA: TODAS</option>' +
+    categories.map(c => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join('');
+  cat.value = currentCat;
+
+  const selectedCat = currentCat === 'TODAS' || currentCat === 'NUEVAS COLECCIONES' ? null : categories.find(c => c.name === currentCat);
+  const availableSubs = selectedCat ? getSubcats(selectedCat.id) : subcategories.slice().sort((a,b) => (a.display_order ?? 0) - (b.display_order ?? 0) || a.name.localeCompare(b.name));
+  sub.innerHTML = '<option value="TODAS">SUBCATEGORÍA: TODAS</option>' +
+    availableSubs.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join('');
+
+  if (currentSub !== 'TODAS') {
+    const subRow = subcategories.find(s => s.name === currentSub);
+    sub.value = subRow && availableSubs.some(s => s.id === subRow.id) ? subRow.id : 'TODAS';
+  } else {
+    sub.value = 'TODAS';
+  }
+}
+
+function render() {
+  const q = normalize($('#search').value);
+  let a = products.filter(p => {
+    const catOk = activeCat === 'TODAS' || (activeCat === 'NUEVAS COLECCIONES' ? p.novedad === true : p.category === activeCat);
+    const subOk = activeSub === 'TODAS' || p.subcategory === activeSub;
+    const hay = normalize(`${p.ref} ${p.brand} ${p.model} ${p.measures} ${p.material} ${p.desc} ${p.category} ${p.subcategory}`);
+    return catOk && subOk && hay.includes(q);
+  });
+
+  const s = $('#sort').value;
+  if (s === 'az') a.sort((x,y) => x.ref.localeCompare(y.ref));
+  if (s === 'za') a.sort((x,y) => y.ref.localeCompare(x.ref));
+
+  const discountSort = $('#sortDiscount')?.value || 'none';
+  if (discountSort === 'discount_desc') a.sort((x,y) => discountPercent(y) - discountPercent(x) || x.ref.localeCompare(y.ref));
+  if (discountSort === 'discount_asc') a.sort((x,y) => discountPercent(x) - discountPercent(y) || x.ref.localeCompare(y.ref));
+
+  $('#count').textContent = `${a.length} PRODUCTO${a.length === 1 ? '' : 'S'}`;
+  grid.innerHTML = a.length ? a.map(p => `
+    <article class="card" data-id="${p.id}">
+      <div class="photo">
+        ${p.novedad ? `<img class="novedad-star" src="estrella-novedad.png" alt="NUEVA COLECCIÓN">` : ''}
+        <img style="${previewCss(p.preview?.[0])}" src="${escapeHtml(p.images?.[0] || '')}" alt="${escapeHtml(p.ref)}">
+        ${p.promoActive && p.discountValue !== '' && p.discountValue !== null && Number(p.discountValue) > 0 ? `<span class="discount-badge">${p.discountType === 'VALOR_FIJO' ? `-$ ${Number(p.discountValue).toLocaleString('es-CO')}` : `-${Number(p.discountValue).toLocaleString('es-CO')}%`}</span>` : ''}
+        ${p.images?.length > 1 ? `<span class="photo-count">${p.images.length} FOTOS</span>` : ''}
+      </div>
+      <div class="info">
+        <div class="ref">${escapeHtml(p.ref)}</div>
+        <div class="meta">${escapeHtml(p.brand || '')}${p.model ? ' · ' + escapeHtml(p.model) : ''}<br>${escapeHtml(p.subcategory || p.category || '')}</div>
+        ${p.price !== '' && p.price !== null && p.price !== undefined ? (() => {
+          const base = Number(p.price);
+          const final = finalPrice(p);
+          const hasDiscount = p.promoActive && p.discountValue !== '' && p.discountValue !== null && Number(p.discountValue) > 0 && final < base;
+          return hasDiscount
+            ? `<div class="price-block"><div class="price old-price">$ ${base.toLocaleString('es-CO')}</div><div class="price final-price">$ ${final.toLocaleString('es-CO')}</div></div>`
+            : `<div class="price">$ ${base.toLocaleString('es-CO')}</div>`;
+        })() : ''}
+        ${p.promoActive ? `<div class="promo-badge">${escapeHtml(p.promoName || 'PROMOCIÓN')}</div>` : ''}
+      </div>
+    </article>`).join('') : `<div class="empty">NO HAY PRODUCTOS QUE COINCIDAN CON TU BÚSQUEDA.</div>`;
+
+  grid.querySelectorAll('.card').forEach(c => c.onclick = () => detail(products.find(p => String(p.id) === String(c.dataset.id))));
+  if (isAdmin()) renderAdminList();
+}
+
+function finalPrice(p) {
+  const base = Number(p.price || 0);
+  if (!p.promoActive || !base || !p.discountValue) return base;
+  const d = Number(p.discountValue);
+  return p.discountType === 'VALOR_FIJO' ? Math.max(0, base - d) : Math.max(0, base - (base * d / 100));
+}
+
+function detail(p) {
+  if (!p) return;
+  let main = 0;
+  const draw = () => {
+    const final = finalPrice(p);
+    $('#modalContent').innerHTML = `<div class="detail">
+      <div>
+        <div class="detail-main-photo"><img id="detailMain" src="${escapeHtml(p.images?.[main] || '')}"></div>
+        ${(p.images || []).length > 1 ? `<div class="thumbs">${p.images.map((im,i) => `<button class="${i === main ? 'active' : ''}" data-i="${i}"><img src="${escapeHtml(im)}"></button>`).join('')}</div>` : ''}
+      </div>
+      <div>
+        <div class="label">REFERENCIA</div><h2>${escapeHtml(p.ref)}</h2>
+        ${p.brand ? `<p class="label">MARCA</p><p>${escapeHtml(p.brand)}</p>` : ''}
+        ${p.model ? `<p class="label">MODELO</p><p>${escapeHtml(p.model)}</p>` : ''}
+        ${p.measures ? `<p class="label">MEDIDAS</p><p>${escapeHtml(p.measures)}</p>` : ''}
+        ${p.material ? `<p class="label">MATERIAL</p><p>${escapeHtml(p.material)}</p>` : ''}
+        <p class="label">CATEGORÍA</p><p>${escapeHtml(p.category)}</p>
+        ${p.subcategory ? `<p class="label">SUBCATEGORÍA</p><p>${escapeHtml(p.subcategory)}</p>` : ''}
+        ${p.desc ? `<p class="label">DESCRIPCIÓN</p><p>${escapeHtml(p.desc)}</p>` : ''}
+        ${p.price !== '' && p.price !== null && p.price !== undefined ? (() => {
+          const base = Number(p.price);
+          const hasDiscount = p.promoActive && p.discountValue !== '' && p.discountValue !== null && Number(p.discountValue) > 0 && final < base;
+          return `<p class="label">PRECIO</p>${hasDiscount ? `<h3 class="old-price">$ ${base.toLocaleString('es-CO')}</h3><h3 class="detail-final-price">$ ${Number(final).toLocaleString('es-CO')}</h3><div class="promo-detail">${escapeHtml(p.promoName || 'PROMOCIÓN')}</div>` : `<h3>$ ${base.toLocaleString('es-CO')}</h3>`}`;
+        })() : ''}
+      </div>
+    </div>`;
+    $('#modal').classList.remove('hidden');
+    $('#modalContent').querySelectorAll('.thumbs button').forEach(b => b.onclick = () => { main = Number(b.dataset.i); draw(); });
+  };
+  draw();
+}
+
+function populateFormReferences() {
+  // MARCA es un campo abierto. Las marcas nuevas se crean automáticamente en Supabase al guardar.
+  $('#pCat').innerHTML = categories.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  updateSubcats();
+}
+
+function updateSubcats() {
+  const catId = $('#pCat').value;
+  const subs = getSubcats(catId);
+  $('#pSubcat').innerHTML = `<option value="">SIN SUBCATEGORÍA</option>` + subs.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+}
+
+function resetForm() {
+  editingId = null; selectedImages = []; previewSettings = []; cropIndex = 0;
+  $('#formTitle').textContent = 'NUEVO PRODUCTO';
+  ['#pRef','#pModel','#pMeasures','#pMaterial','#pPrice','#pDesc','#pPromoName','#pPromoValue','#pPromoStart','#pPromoEnd'].forEach(s => { if ($(s)) $(s).value = ''; });
+  $('#pBrand').value = '';
+  if (categories[0]) $('#pCat').value = categories[0].id;
+  updateSubcats();
+  $('#pNovedad').checked = false;
+  $('#pPromoActive').checked = false;
+  $('#pDiscountType').value = 'PORCENTAJE';
+  togglePromotionFields();
+  renderPreviews(); renderCropEditor();
+}
+
+function sourceOf(item) { return item.kind === 'new' ? item.file : item.url; }
+
+function openForm(p = null) {
+  if (p) {
+    editingId = p.id;
+    selectedImages = (p.imageRecords || []).map(img => ({ kind:'existing', id:img.id, url:img.image_url, storagePath:img.storage_path, preview:{x:Number(img.preview_x ?? 0), y:Number(img.preview_y ?? 50), zoom:Number(img.preview_zoom ?? 1.55)} }));
+    previewSettings = selectedImages.map(i => ({...i.preview}));
+    cropIndex = 0;
+    $('#formTitle').textContent = 'EDITAR PRODUCTO';
+    $('#pRef').value = p.ref || '';
+    $('#pBrand').value = p.brand || '';
+    $('#pModel').value = p.model || '';
+    $('#pMeasures').value = p.measures || '';
+    $('#pMaterial').value = p.material || '';
+    $('#pPrice').value = p.price ?? '';
+    $('#pDesc').value = p.desc || '';
+    $('#pCat').value = p.categoryId || '';
+    updateSubcats();
+    $('#pSubcat').value = p.subcategoryId || '';
+    $('#pNovedad').checked = Boolean(p.novedad);
+    $('#pPromoActive').checked = p.promoActive;
+    $('#pPromoName').value = p.promoName || '';
+    $('#pDiscountType').value = p.discountType || 'PORCENTAJE';
+    $('#pPromoValue').value = p.discountValue ?? '';
+    $('#pPromoStart').value = p.promoStart || '';
+    $('#pPromoEnd').value = p.promoEnd || '';
+  } else {
+    resetForm();
+  }
+  ensurePreviewSettings(); renderPreviews(); renderCropEditor(); togglePromotionFields();
+  $('#productForm').classList.remove('hidden');
+}
+
+function ensurePreviewSettings() {
+  previewSettings = selectedImages.map((item,i) => ({...(previewSettings[i] || item.preview || defaultPreview())}));
+  if (cropIndex >= selectedImages.length) cropIndex = Math.max(0, selectedImages.length - 1);
+}
+
+function renderPreviews() {
+  ensurePreviewSettings();
+  const el = $('#previewSlots');
+  el.innerHTML = selectedImages.map((im,i) => `<div class="preview-slot ${i === cropIndex ? 'selected' : ''}" data-i="${i}">
+    <img src="${escapeHtml(sourceOf(im))}"><button type="button" data-i="${i}">×</button><small>FOTO ${i+1}</small>
+  </div>`).join('');
+  el.querySelectorAll('.preview-slot').forEach(b => b.onclick = e => { if (e.target.tagName === 'BUTTON') return; cropIndex = Number(b.dataset.i); renderPreviews(); renderCropEditor(); });
+  el.querySelectorAll('button').forEach(b => b.onclick = e => { e.stopPropagation(); const idx = Number(b.dataset.i); selectedImages.splice(idx,1); previewSettings.splice(idx,1); if (cropIndex >= selectedImages.length) cropIndex = Math.max(0, selectedImages.length - 1); renderPreviews(); renderCropEditor(); });
+}
+
+function renderCropEditor() {
+  const wrap = $('#cropEditor');
+  if (!wrap) return;
+  ensurePreviewSettings();
+  if (!selectedImages.length) { wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+  const c = previewSettings[cropIndex] || defaultPreview();
+  $('#cropImageSelect').innerHTML = selectedImages.map((im,i) => `<button type="button" class="crop-thumb ${i === cropIndex ? 'active' : ''}" data-i="${i}"><img src="${escapeHtml(sourceOf(im))}"><span>FOTO ${i+1}</span></button>`).join('');
+  $('#cropStageImg').src = sourceOf(selectedImages[cropIndex]);
+  $('#cropStageImg').style.cssText = previewCss(c);
+  $('#cropX').value = c.x; $('#cropY').value = c.y; $('#cropZoom').value = Math.round(c.zoom * 100);
+  $('#cropXValue').textContent = `${Math.round(c.x)}%`; $('#cropYValue').textContent = `${Math.round(c.y)}%`; $('#cropZoomValue').textContent = `${Math.round(c.zoom * 100)}%`;
+  $('#cropImageSelect').querySelectorAll('.crop-thumb').forEach(b => b.onclick = () => { cropIndex = Number(b.dataset.i); renderCropEditor(); renderPreviews(); });
+}
+
+function updateCrop() {
+  if (!selectedImages.length) return;
+  previewSettings[cropIndex] = { x:Number($('#cropX').value), y:Number($('#cropY').value), zoom:Number($('#cropZoom').value)/100 };
+  const c = previewSettings[cropIndex];
+  $('#cropStageImg').style.cssText = previewCss(c);
+  $('#cropXValue').textContent = `${Math.round(c.x)}%`; $('#cropYValue').textContent = `${Math.round(c.y)}%`; $('#cropZoomValue').textContent = `${Math.round(c.zoom * 100)}%`;
+  renderPreviews();
+}
+
+function resetCrop() {
+  if (!selectedImages.length) return;
+  previewSettings[cropIndex] = defaultPreview();
+  renderCropEditor(); renderPreviews();
+}
+
+function saveCurrentCrop() {
+  if (!selectedImages.length) return;
+  $('#importInfo').textContent = 'AJUSTE DE PREVISUALIZACIÓN LISTO. PULSA GUARDAR PRODUCTO PARA APLICARLO.';
+}
+
+async function addImages(files) {
+  for (const f of [...files]) {
+    if (selectedImages.length >= 3) break;
+    if (f.type.startsWith('image/')) selectedImages.push({ kind:'new', file:f, url:URL.createObjectURL(f), preview:defaultPreview() });
+  }
+  ensurePreviewSettings(); renderPreviews(); renderCropEditor();
+  if ([...files].length > 3) $('#importInfo').textContent = 'MÁXIMO 3 FOTOS POR REFERENCIA.';
+}
+
+function slugify(v) {
+  return normalize(v).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'') || 'producto';
+}
+
+function fileExt(file) {
+  const name = file?.name || '';
+  const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : 'jpg';
+  return /^[a-z0-9]+$/.test(ext) ? ext : 'jpg';
+}
+
+async function uploadImage(productId, file, order) {
+  const path = `${productId}/${crypto.randomUUID()}-${order}.${fileExt(file)}`;
+  const { error: uploadError } = await sb.storage.from(STORAGE_BUCKET).upload(path, file, { contentType:file.type || 'image/jpeg', upsert:false });
+  if (uploadError) throw uploadError;
+  const { data: publicData } = sb.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+  return { path, url:publicData.publicUrl };
+}
+
+async function removeStoragePaths(paths) {
+  const clean = paths.filter(Boolean);
+  if (!clean.length) return;
+  const { error } = await sb.storage.from(STORAGE_BUCKET).remove(clean);
+  if (error) console.warn('NO SE PUDIERON ELIMINAR ALGUNAS IMÁGENES:', error);
+}
+
+async function saveProduct() {
+  if (!selectedImages.length) return showError('AGREGA AL MENOS UNA FOTO.');
+  if (selectedImages.length > 3) return showError('MÁXIMO 3 FOTOS POR REFERENCIA.');
+  const ref = normalize($('#pRef').value.trim());
+  if (!ref) return showError('LA REFERENCIA ES OBLIGATORIA.');
+  if (!$('#pCat').value) return showError('SELECCIONA UNA CATEGORÍA.');
+
+  const duplicateQuery = await sb.from('products').select('id').eq('referencia', ref).neq('id', editingId || '00000000-0000-0000-0000-000000000000').limit(1);
+  if (duplicateQuery.error) return showError(duplicateQuery.error.message);
+  if (duplicateQuery.data?.length) return showError('YA EXISTE UNA REFERENCIA IGUAL. EDITA EL PRODUCTO EXISTENTE.');
+
+  let brandId;
+  try {
+    brandId = await resolveBrandId($('#pBrand').value);
+  } catch (e) {
+    return showError(`NO SE PUDO GUARDAR LA MARCA: ${e.message || e}`);
+  }
+
+  const payload = {
+    referencia: ref,
+    brand_id: brandId,
+    modelo: normalizeNullable($('#pModel').value),
+    descripcion: normalizeNullable($('#pDesc').value),
+    category_id: $('#pCat').value,
+    subcategory_id: $('#pSubcat').value || null,
+    material: normalizeNullable($('#pMaterial').value),
+    medidas: normalizeNullable($('#pMeasures').value),
+    precio_base: $('#pPrice').value === '' ? null : Number($('#pPrice').value),
+    novedad: $('#pNovedad').checked,
+    promocion_activa: $('#pPromoActive').checked,
+    nombre_promocion: normalizeNullable($('#pPromoName').value),
+    tipo_descuento: $('#pDiscountType').value,
+    valor_descuento: $('#pPromoValue').value === '' ? null : Number($('#pPromoValue').value),
+    fecha_inicio_promocion: $('#pPromoStart').value || null,
+    fecha_fin_promocion: $('#pPromoEnd').value || null,
+    activo: true,
+    visible: true
+  };
+
+  let productId = editingId;
+  let oldPaths = [];
+  let uploadedPaths = [];
+
+  if (editingId) {
+    const old = products.find(p => p.id === editingId);
+    const retainedPaths = selectedImages.filter(i => i.kind === 'existing').map(i => i.storagePath).filter(Boolean);
+    oldPaths = (old?.imageRecords || []).map(i => i.storage_path).filter(Boolean).filter(path => !retainedPaths.includes(path));
+    const { data: updatedProduct, error } = await sb.from('products').update(payload).eq('id', editingId).select('id').single();
+    if (error) return showError(error.message);
+    if (!updatedProduct?.id) return showError('NO SE ENCONTRÓ EL PRODUCTO QUE SE ESTÁ EDITANDO. RECARGA EL CATÁLOGO Y VUELVE A INTENTARLO.');
+    productId = updatedProduct.id;
+  } else {
+    const { data, error } = await sb.from('products').insert(payload).select('id').single();
+    if (error) return showError(error.message);
+    productId = data.id;
+  }
+
+  try {
+    if (editingId) {
+      const { error: delRowsError } = await sb.from('product_images').delete().eq('product_id', productId);
+      if (delRowsError) throw delRowsError;
+    }
+
+    const rows = [];
+    for (let i = 0; i < selectedImages.length; i++) {
+      const item = selectedImages[i];
+      let uploaded;
+      if (item.kind === 'new') {
+        uploaded = await uploadImage(productId, item.file, i + 1);
+        uploadedPaths.push(uploaded.path);
+      } else uploaded = { path:item.storagePath, url:item.url };
+      const cfg = previewSettings[i] || item.preview || defaultPreview();
+      rows.push({
+        product_id: productId,
+        image_url: uploaded.url,
+        storage_path: uploaded.path,
+        image_order: i + 1,
+        image_type: i === 0 ? 'PRODUCTO' : (i === 1 ? 'DETALLE' : 'FICHA'),
+        preview_x: Number(cfg.x ?? 0),
+        preview_y: Number(cfg.y ?? 50),
+        preview_zoom: Number(cfg.zoom ?? 1.55)
+      });
+    }
+
+    const { error: imageInsertError } = await sb.from('product_images').insert(rows);
+    if (imageInsertError) throw imageInsertError;
+    if (editingId) await removeStoragePaths(oldPaths);
+
+    $('#importInfo').textContent = editingId ? 'PRODUCTO ACTUALIZADO CORRECTAMENTE.' : 'PRODUCTO GUARDADO CORRECTAMENTE.';
+    await refreshCatalog();
+    $('#productForm').classList.add('hidden');
+    editingId = null; selectedImages = []; previewSettings = [];
+    renderPreviews(); renderCropEditor();
+  } catch (e) {
+    console.error(e);
+    await removeStoragePaths(uploadedPaths);
+    if (!editingId && productId) await sb.from('products').delete().eq('id', productId);
+    showError(`NO SE PUDO GUARDAR COMPLETAMENTE EL PRODUCTO: ${e.message || e}`);
+  }
+}
+
+async function importFiles(files) {
+  if (!isAdmin()) return showError('INICIA SESIÓN COMO ADMINISTRADOR.');
+  const arr = [...files].filter(f => f.type.startsWith('image/'));
+  let added = 0, skipped = 0, failed = 0;
+  for (const f of arr) {
+    const ref = normalize(f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '));
+    const existing = products.find(p => normalize(p.ref) === ref);
+    if (existing) { skipped++; continue; }
+    try {
+      const pathText = normalize(f.webkitRelativePath || '');
+      const cat = categories.find(c => pathText.includes('/' + normalize(c.name) + '/')) || categories[0];
+      const sub = cat ? getSubcats(cat.id).find(s => pathText.includes('/' + normalize(s.name) + '/')) : null;
+      const { data: p, error } = await sb.from('products').insert({
+        referencia: ref || 'SIN REFERENCIA',
+        brand_id: null,
+        modelo: null,
+        descripcion: null,
+        category_id: cat?.id || null,
+        subcategory_id: sub?.id || null,
+        material: null,
+        medidas: null,
+        precio_base: null,
+        activo: true,
+        visible: true
+      }).select('id').single();
+      if (error) throw error;
+      const uploaded = await uploadImage(p.id, f, 1);
+      const { error: imgError } = await sb.from('product_images').insert({
+        product_id:p.id, image_url:uploaded.url, storage_path:uploaded.path, image_order:1, image_type:'PRODUCTO', preview_x:0, preview_y:50, preview_zoom:1.55
+      });
+      if (imgError) throw imgError;
+      added++;
+    } catch (e) {
+      console.error(e); failed++;
+    }
+  }
+  await refreshCatalog();
+  $('#importInfo').textContent = `IMPORTADAS: ${added}. OMITIDAS: ${skipped}. CON ERROR: ${failed}.`;
+}
+
+function renderAdminList() {
+  const el = $('#adminList');
+  if (!el) return;
+  el.innerHTML = products.length ? products.slice().sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt)).map(p => `<div class="admin-row">
+    <img src="${escapeHtml(p.images?.[0] || '')}">
+    <div><strong>${escapeHtml(p.ref)}</strong><small>${escapeHtml(p.brand || 'SIN MARCA')} · ${escapeHtml(p.subcategory || p.category || '')} · ${(p.images || []).length} FOTO(S)</small></div>
+    <div class="row-actions"><button class="edit" data-id="${p.id}">EDITAR</button><button class="delete" data-id="${p.id}">ELIMINAR</button></div>
+  </div>`).join('') : `<div class="empty">NO HAY PRODUCTOS CARGADOS.</div>`;
+
+  el.querySelectorAll('.edit').forEach(b => b.onclick = () => openForm(products.find(p => String(p.id) === String(b.dataset.id))));
+  el.querySelectorAll('.delete').forEach(b => b.onclick = async () => {
+    if (!confirm('¿ELIMINAR ESTE PRODUCTO?')) return;
+    const p = products.find(x => String(x.id) === String(b.dataset.id));
+    if (!p) return;
+    const { error } = await sb.from('products').delete().eq('id', p.id);
+    if (error) return showError(error.message);
+    await removeStoragePaths((p.imageRecords || []).map(i => i.storage_path));
+    await refreshCatalog();
+  });
+}
+
+function togglePromotionFields() {
+  const active = $('#pPromoActive')?.checked;
+  $('#promotionFields')?.classList.toggle('hidden', !active);
+}
+
+async function loginAdmin() {
+  const email = $('#adminUser').value.trim();
+  const password = $('#adminPass').value;
+  $('#loginError').textContent = '';
+  if (!email || !password) { $('#loginError').textContent = 'INGRESA CORREO Y CONTRASEÑA.'; return; }
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) {
+    $('#loginError').textContent = 'NO SE PUDO INICIAR SESIÓN. VERIFICA EL CORREO Y LA CONTRASEÑA DEL USUARIO DE SUPABASE.';
+    console.error(error);
+    return;
+  }
+  if (data.user?.id !== ADMIN_UID) {
+    await sb.auth.signOut();
+    $('#loginError').textContent = 'ESTE USUARIO NO TIENE PERMISOS DE ADMINISTRADOR.';
+    return;
+  }
+  currentSession = data.session;
+  setAdminUi(true);
+  $('#loginModal').classList.add('hidden');
+  // En el portal administrativo, después de autenticarse se muestra el mismo catálogo que ve el cliente.
+  // La gestión se abre únicamente al pulsar el botón GESTIONAR CATÁLOGO.
+  if (document.body.classList.contains('admin-portal')) {
+    $('#admin').classList.add('hidden');
+  } else {
+    $('#admin').classList.remove('hidden');
+    renderAdminList();
+  }
+}
+
+async function logout() {
+  await sb.auth.signOut();
+  currentSession = null;
+  setAdminUi(false);
+  $('#admin').classList.add('hidden');
+  if (document.body.classList.contains('admin-portal')) {
+    $('#loginModal').classList.remove('hidden');
+    $('#adminUser').value = '';
+    $('#adminPass').value = '';
+    $('#adminUser').focus();
+  }
+}
+
+async function refreshCatalog() {
+  await loadReferenceData();
+  await loadProducts();
+  populateFormReferences();
+  populateCatalogSortControls();
+  renderAccordion();
+  render();
+}
+
+function openAdmin() {
+  if (isAdmin()) { $('#admin').classList.remove('hidden'); renderAdminList(); }
+  else { $('#loginModal').classList.remove('hidden'); $('#adminUser').focus(); }
+}
+
+$('#search').oninput = render;
+$('#sort').onchange = render;
+$('#sortDiscount').onchange = render;
+$('#sortCategory').onchange = () => {
+  activeCat = $('#sortCategory').value;
+  activeSub = 'TODAS';
+  populateCatalogSortControls();
+  renderAccordion();
+  render();
+};
+$('#sortSubcategory').onchange = () => {
+  const id = $('#sortSubcategory').value;
+  if (id === 'TODAS') {
+    activeSub = 'TODAS';
+  } else {
+    const sub = subcategories.find(s => String(s.id) === String(id));
+    if (sub) {
+      activeSub = sub.name;
+      const cat = categories.find(c => c.id === sub.category_id);
+      activeCat = cat?.name || 'TODAS';
+    }
+  }
+  populateCatalogSortControls();
+  renderAccordion();
+  render();
+};
+if ($('#adminBtn')) $('#adminBtn').onclick = openAdmin;
+$('#logoutBtn').onclick = logout;
+$('#loginSubmit').onclick = loginAdmin;
+$('#adminPass').addEventListener('keydown', e => { if (e.key === 'Enter') loginAdmin(); });
+$('#importBtn').onclick = () => $('#folderInput').click();
+$('#folderInput').onchange = e => importFiles(e.target.files);
+$('#addBtn').onclick = () => openForm();
+$('#cancelEdit').onclick = () => { $('#productForm').classList.add('hidden'); resetForm(); };
+$('#pCat').onchange = updateSubcats;
+$('#pImages').onchange = e => addImages(e.target.files);
+$('#cropX').oninput = updateCrop;
+$('#cropY').oninput = updateCrop;
+$('#cropZoom').oninput = updateCrop;
+$('#cropReset').onclick = resetCrop;
+$('#cropSave').onclick = saveCurrentCrop;
+$('#pPromoActive').onchange = togglePromotionFields;
+$('#saveProduct').onclick = saveProduct;
+$('#exportBtn').onclick = () => {
+  const blob = new Blob([JSON.stringify(products, null, 2)], {type:'application/json'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'CATALOGO-MAXIGAFAS.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+document.querySelectorAll('.close').forEach(b => b.onclick = () => b.closest('.modal').classList.add('hidden'));
+
+sb.auth.onAuthStateChange((_event, session) => {
+  currentSession = session;
+  const admin = session?.user?.id === ADMIN_UID;
+  setAdminUi(admin);
+});
+
+async function initCatalog() {
+  try {
+    const { data: sessionData } = await sb.auth.getSession();
+    currentSession = sessionData.session;
+    if (currentSession?.user?.id !== ADMIN_UID) currentSession = null;
+    await refreshCatalog();
+    setAdminUi(isAdmin());
+  } catch (e) {
+    console.error(e);
+    $('#count').textContent = 'NO SE PUDO CARGAR EL CATÁLOGO';
+    grid.innerHTML = `<div class="empty">NO SE PUDO CONECTAR CON EL CATÁLOGO. VERIFICA SUPABASE Y LAS POLÍTICAS RLS.</div>`;
+  }
+}
+
+async function initAdminPortal() {
+  // El portal administrativo siempre comienza pidiendo autenticación.
+  // No dependemos de una sesión anterior ni de estados guardados en el navegador.
+  try {
+    await sb.auth.signOut();
+  } catch (e) {
+    console.warn('No se pudo cerrar una sesión anterior:', e);
+  }
+  currentSession = null;
+  setAdminUi(false);
+  $('#admin')?.classList.add('hidden');
+  $('#loginModal')?.classList.remove('hidden');
+
+  try {
+    await refreshCatalog();
+  } catch (e) {
+    console.error(e);
+    $('#count').textContent = 'NO SE PUDO CARGAR EL CATÁLOGO';
+    grid.innerHTML = `<div class="empty">NO SE PUDO CONECTAR CON EL CATÁLOGO. VERIFICA SUPABASE Y LAS POLÍTICAS RLS.</div>`;
+  }
+  setTimeout(() => $('#adminUser')?.focus(), 50);
+}
+
+if (document.body.classList.contains('admin-portal')) initAdminPortal();
+else initCatalog();
