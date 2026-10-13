@@ -10,6 +10,16 @@
   <div class="brand-area"><div class="logo-slot"><img id="brandLogo" src="logo-maxigafas.png" alt="MAXIGAFAS"></div></div>
   <div class="header-tools">
     <div class="search-wrap"><span>⌕</span><input id="search" placeholder="BUSCAR REFERENCIA, MARCA, MODELO, MEDIDA..." autocomplete="off"></div>
+    <div class="catalog-sort-controls" aria-label="ORDENAR Y FILTRAR CATÁLOGO">
+      <span class="sort-label">ORDENAR POR</span>
+      <select id="sortCategory" aria-label="CATEGORÍA"><option value="TODAS">CATEGORÍA: TODAS</option></select>
+      <select id="sortSubcategory" aria-label="SUBCATEGORÍA"><option value="TODAS">SUBCATEGORÍA: TODAS</option></select>
+      <select id="sortDiscount" aria-label="DESCUENTO">
+        <option value="none">DESCUENTO</option>
+        <option value="discount_desc">MAYOR DESCUENTO → MENOR</option>
+        <option value="discount_asc">MENOR DESCUENTO → MAYOR</option>
+      </select>
+    </div>
   </div>
 </header>
 

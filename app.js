@@ -534,11 +534,13 @@ async function saveProduct() {
   let productId = editingId;
   let oldPaths = [];
   let uploadedPaths = [];
+  let oldImageRecords = [];
 
   if (editingId) {
     const old = products.find(p => p.id === editingId);
+    oldImageRecords = (old?.imageRecords || []).map(i => ({ ...i }));
     const retainedPaths = selectedImages.filter(i => i.kind === 'existing').map(i => i.storagePath).filter(Boolean);
-    oldPaths = (old?.imageRecords || []).map(i => i.storage_path).filter(Boolean).filter(path => !retainedPaths.includes(path));
+    oldPaths = oldImageRecords.map(i => i.storage_path).filter(Boolean).filter(path => !retainedPaths.includes(path));
     const { data: updatedProduct, error } = await sb.from('products').update(payload).eq('id', editingId).select('id').single();
     if (error) return showError(error.message);
     if (!updatedProduct?.id) return showError('NO SE ENCONTRÓ EL PRODUCTO QUE SE ESTÁ EDITANDO. RECARGA EL CATÁLOGO Y VUELVE A INTENTARLO.');
@@ -576,20 +578,64 @@ async function saveProduct() {
       });
     }
 
+    if (!rows.length) throw new Error('NO SE GENERARON REGISTROS DE IMAGEN.');
+
     const { error: imageInsertError } = await sb.from('product_images').insert(rows);
     if (imageInsertError) throw imageInsertError;
+
+    // VERIFICACIÓN OBLIGATORIA: no damos por guardado el producto hasta
+    // comprobar que Supabase realmente registró todas sus imágenes.
+    const { data: savedImages, error: verifyError } = await sb
+      .from('product_images')
+      .select('id,product_id,image_url,storage_path,image_order')
+      .eq('product_id', productId)
+      .order('image_order');
+    if (verifyError) throw new Error(`NO SE PUDO VERIFICAR LAS FOTOS EN SUPABASE: ${verifyError.message || verifyError}`);
+
+    const validSavedImages = (savedImages || []).filter(img =>
+      img.product_id === productId && img.image_url && img.storage_path
+    );
+    if (validSavedImages.length !== rows.length) {
+      throw new Error(`SUPABASE NO REGISTRÓ TODAS LAS FOTOS. SE ESPERABAN ${rows.length} Y SE ENCONTRARON ${validSavedImages.length}.`);
+    }
+
     if (editingId) await removeStoragePaths(oldPaths);
 
-    $('#importInfo').textContent = editingId ? 'PRODUCTO ACTUALIZADO CORRECTAMENTE.' : 'PRODUCTO GUARDADO CORRECTAMENTE.';
+    $('#importInfo').textContent = editingId
+      ? `PRODUCTO ACTUALIZADO CON ${validSavedImages.length} FOTO${validSavedImages.length === 1 ? '' : 'S'}.`
+      : `PRODUCTO GUARDADO CON ${validSavedImages.length} FOTO${validSavedImages.length === 1 ? '' : 'S'}.`;
     await refreshCatalog();
     $('#productForm').classList.add('hidden');
     editingId = null; selectedImages = []; previewSettings = [];
     renderPreviews(); renderCropEditor();
   } catch (e) {
     console.error(e);
+
+    // Rollback de seguridad: eliminamos las imágenes nuevas que sí llegaron
+    // a Storage y los registros que pudieran haber quedado a medias.
     await removeStoragePaths(uploadedPaths);
+    if (productId) {
+      await sb.from('product_images').delete().eq('product_id', productId);
+    }
+
+    // Si estábamos editando, restauramos los registros anteriores.
+    // Sus archivos originales NO se borran hasta que la nueva versión haya
+    // pasado la verificación, por lo que se pueden recuperar sin pérdida.
+    if (editingId && oldImageRecords.length) {
+      const restoreRows = oldImageRecords.map(({ id, product_id, image_url, storage_path, image_order, image_type, preview_x, preview_y, preview_zoom }) => ({
+        ...(id ? { id } : {}),
+        product_id, image_url, storage_path, image_order, image_type,
+        preview_x: Number(preview_x ?? 0),
+        preview_y: Number(preview_y ?? 50),
+        preview_zoom: Number(preview_zoom ?? 1.55)
+      }));
+      const { error: restoreError } = await sb.from('product_images').insert(restoreRows);
+      if (restoreError) console.error('NO SE PUDIERON RESTAURAR LAS FOTOS ANTERIORES:', restoreError);
+    }
+
     if (!editingId && productId) await sb.from('products').delete().eq('id', productId);
-    showError(`NO SE PUDO GUARDAR COMPLETAMENTE EL PRODUCTO: ${e.message || e}`);
+    await refreshCatalog().catch(() => {});
+    showError(`NO SE PUDO GUARDAR COMPLETAMENTE EL PRODUCTO. NINGUNA FOTO QUEDÓ CONFIRMADA EN SUPABASE. ${e.message || e}`);
   }
 }
 
@@ -624,9 +670,30 @@ async function importFiles(files) {
         product_id:p.id, image_url:uploaded.url, storage_path:uploaded.path, image_order:1, image_type:'PRODUCTO', preview_x:0, preview_y:50, preview_zoom:1.55
       });
       if (imgError) throw imgError;
+
+      const { data: verifiedImportImage, error: verifyImportError } = await sb
+        .from('product_images')
+        .select('id,image_url,storage_path')
+        .eq('product_id', p.id)
+        .eq('image_order', 1)
+        .maybeSingle();
+      if (verifyImportError) throw verifyImportError;
+      if (!verifiedImportImage?.image_url || !verifiedImportImage?.storage_path) {
+        throw new Error('LA FOTO NO QUEDÓ CONFIRMADA EN SUPABASE.');
+      }
       added++;
     } catch (e) {
-      console.error(e); failed++;
+      console.error(e);
+      failed++;
+      // Evita dejar productos huérfanos cuando la foto no se pudo registrar.
+      // El archivo de Storage puede eliminarse si llegó a subirse.
+      try {
+        if (typeof p !== 'undefined' && p?.id) await sb.from('product_images').delete().eq('product_id', p.id);
+        if (typeof uploaded !== 'undefined' && uploaded?.path) await removeStoragePaths([uploaded.path]);
+        if (typeof p !== 'undefined' && p?.id) await sb.from('products').delete().eq('id', p.id);
+      } catch (rollbackError) {
+        console.error('ERROR EN ROLLBACK DE IMPORTACIÓN:', rollbackError);
+      }
     }
   }
   await refreshCatalog();
@@ -715,17 +782,17 @@ function openAdmin() {
   else { $('#loginModal').classList.remove('hidden'); $('#adminUser').focus(); }
 }
 
-$('#search').oninput = render;
-$('#sort').onchange = render;
-$('#sortDiscount').onchange = render;
-$('#sortCategory').onchange = () => {
+$('#search')?.addEventListener('input', render);
+$('#sort')?.addEventListener('change', render);
+$('#sortDiscount')?.addEventListener('change', render);
+$('#sortCategory')?.addEventListener('change', () => {
   activeCat = $('#sortCategory').value;
   activeSub = 'TODAS';
   populateCatalogSortControls();
   renderAccordion();
   render();
-};
-$('#sortSubcategory').onchange = () => {
+});
+$('#sortSubcategory')?.addEventListener('change', () => {
   const id = $('#sortSubcategory').value;
   if (id === 'TODAS') {
     activeSub = 'TODAS';
@@ -740,29 +807,29 @@ $('#sortSubcategory').onchange = () => {
   populateCatalogSortControls();
   renderAccordion();
   render();
-};
+});
 if ($('#adminBtn')) $('#adminBtn').onclick = openAdmin;
-$('#logoutBtn').onclick = logout;
-$('#loginSubmit').onclick = loginAdmin;
-$('#adminPass').addEventListener('keydown', e => { if (e.key === 'Enter') loginAdmin(); });
-$('#importBtn').onclick = () => $('#folderInput').click();
-$('#folderInput').onchange = e => importFiles(e.target.files);
-$('#addBtn').onclick = () => openForm();
-$('#cancelEdit').onclick = () => { $('#productForm').classList.add('hidden'); resetForm(); };
-$('#pCat').onchange = updateSubcats;
-$('#pImages').onchange = e => addImages(e.target.files);
-$('#cropX').oninput = updateCrop;
-$('#cropY').oninput = updateCrop;
-$('#cropZoom').oninput = updateCrop;
-$('#cropReset').onclick = resetCrop;
-$('#cropSave').onclick = saveCurrentCrop;
-$('#pPromoActive').onchange = togglePromotionFields;
-$('#saveProduct').onclick = saveProduct;
-$('#exportBtn').onclick = () => {
+$('#logoutBtn')?.addEventListener('click', logout);
+$('#loginSubmit')?.addEventListener('click', loginAdmin);
+$('#adminPass')?.addEventListener('keydown', e => { if (e.key === 'Enter') loginAdmin(); });
+$('#importBtn')?.addEventListener('click', () => $('#folderInput')?.click());
+$('#folderInput')?.addEventListener('change', e => importFiles(e.target.files));
+$('#addBtn')?.addEventListener('click', () => openForm());
+$('#cancelEdit')?.addEventListener('click', () => { $('#productForm')?.classList.add('hidden'); resetForm(); });
+$('#pCat')?.addEventListener('change', updateSubcats);
+$('#pImages')?.addEventListener('change', e => addImages(e.target.files));
+$('#cropX')?.addEventListener('input', updateCrop);
+$('#cropY')?.addEventListener('input', updateCrop);
+$('#cropZoom')?.addEventListener('input', updateCrop);
+$('#cropReset')?.addEventListener('click', resetCrop);
+$('#cropSave')?.addEventListener('click', saveCurrentCrop);
+$('#pPromoActive')?.addEventListener('change', togglePromotionFields);
+$('#saveProduct')?.addEventListener('click', saveProduct);
+$('#exportBtn')?.addEventListener('click', () => {
   const blob = new Blob([JSON.stringify(products, null, 2)], {type:'application/json'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'CATALOGO-MAXIGAFAS.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-};
-document.querySelectorAll('.close').forEach(b => b.onclick = () => b.closest('.modal').classList.add('hidden'));
+});
+document.querySelectorAll('.close').forEach(b => b.addEventListener('click', () => b.closest('.modal')?.classList.add('hidden')));
 
 sb.auth.onAuthStateChange((_event, session) => {
   currentSession = session;
