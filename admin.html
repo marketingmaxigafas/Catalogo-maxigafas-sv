@@ -30,8 +30,13 @@
 
   <div class="catalog-layout">
     <aside class="sidebar">
-      <div class="sidebar-title">CATEGORÍAS</div>
-      <div id="accordion"></div>
+      <button id="catalogToggle" class="catalog-toggle" type="button" aria-expanded="false">
+        <span>CATÁLOGO</span><span class="catalog-toggle-icon">+</span>
+      </button>
+      <div id="catalogPanel" class="catalog-panel" hidden>
+        <div class="sidebar-title">CATEGORÍAS</div>
+        <div id="accordion"></div>
+      </div>
     </aside>
     <section class="catalog-content">
       <div class="toolbar"><span id="count"></span><select id="sort"><option value="new">MÁS RECIENTES</option><option value="az">REFERENCIA A–Z</option><option value="za">REFERENCIA Z–A</option></select></div>
@@ -51,7 +56,7 @@
   <input id="fileInput" type="file" accept="image/*" multiple hidden><input id="folderInput" type="file" accept="image/*" webkitdirectory directory multiple hidden>
   <div id="productForm" class="form hidden">
     <div class="form-title"><span id="formTitle">NUEVO PRODUCTO</span><button id="cancelEdit" class="text-btn">CANCELAR</button></div>
-    <div class="photo-upload"><div id="previewSlots" class="preview-slots"></div><label class="upload-box">+ AGREGAR FOTOS (MÁX. 3)<input id="pImages" type="file" accept="image/*" multiple hidden></label></div>
+    <div class="photo-upload"><div id="previewSlots" class="preview-slots"></div><label id="photoDropZone" class="upload-box">+ AGREGAR FOTOS (MÁX. 3)<span class="drop-hint">O ARRASTRA LAS FOTOS DESDE TU ESCRITORIO AQUÍ</span><input id="pImages" type="file" accept="image/*" multiple hidden></label></div>
     <div id="cropEditor" class="crop-editor hidden">
       <div class="crop-editor-head">
         <div><strong>AJUSTAR PREVISUALIZACIÓN</strong><small>LA IMAGEN ORIGINAL NO SE MODIFICA. SOLO CAMBIA CÓMO SE VE EN LA TARJETA.</small></div>
@@ -61,7 +66,7 @@
       <div class="crop-workspace">
         <div class="crop-stage"><img id="cropStageImg" src="" alt="PREVISUALIZACIÓN"></div>
         <div class="crop-controls">
-          <label>POSICIÓN HORIZONTAL <output id="cropXValue">0%</output><input id="cropX" type="range" min="0" max="100" value="0"></label>
+          <label>POSICIÓN HORIZONTAL <output id="cropXValue">0%</output><input id="cropX" type="range" min="0" max="200" value="0"></label>
           <label>POSICIÓN VERTICAL <output id="cropYValue">50%</output><input id="cropY" type="range" min="0" max="100" value="50"></label>
           <label>ZOOM <output id="cropZoomValue">155%</output><input id="cropZoom" type="range" min="100" max="250" value="155"></label>
           <p>CON ESTOS CONTROLES PUEDES DEJAR LAS GAFAS CENTRADAS, MOVERLAS HACIA LA IZQUIERDA/DERECHA Y ACERCARLAS SIN ALTERAR LA FOTO ORIGINAL.</p>

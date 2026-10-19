@@ -30,8 +30,13 @@
 
   <div class="catalog-layout">
     <aside class="sidebar">
-      <div class="sidebar-title">CATEGORÍAS</div>
-      <div id="accordion"></div>
+      <button id="catalogToggle" class="catalog-toggle" type="button" aria-expanded="false">
+        <span>CATÁLOGO</span><span class="catalog-toggle-icon">+</span>
+      </button>
+      <div id="catalogPanel" class="catalog-panel" hidden>
+        <div class="sidebar-title">CATEGORÍAS</div>
+        <div id="accordion"></div>
+      </div>
     </aside>
     <section class="catalog-content">
       <div class="toolbar"><span id="count"></span><select id="sort"><option value="new">MÁS RECIENTES</option><option value="az">REFERENCIA A–Z</option><option value="za">REFERENCIA Z–A</option></select></div>

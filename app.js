@@ -205,32 +205,78 @@ async function loadProducts() {
 
 function allCats() { return ['TODAS', ...categories.map(c => c.name)]; }
 
+// Categorías abiertas de forma independiente. Así el botón + despliega
+// las subcategorías sin obligar a cambiar el filtro del catálogo.
+const openCategories = new Set();
+
+let catalogPanelOpen = false;
+
+function setCatalogPanel(open) {
+  catalogPanelOpen = !!open;
+  const panel = $('#catalogPanel');
+  const toggle = $('#catalogToggle');
+  if (panel) {
+    panel.hidden = !catalogPanelOpen;
+    panel.classList.toggle('open', catalogPanelOpen);
+  }
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', catalogPanelOpen ? 'true' : 'false');
+    const icon = toggle.querySelector('.catalog-toggle-icon');
+    if (icon) icon.textContent = catalogPanelOpen ? '−' : '+';
+  }
+}
+
 function renderAccordion() {
   const el = $('#accordion');
+  if (!el) return;
   el.innerHTML = `<button class="accordion-head ${activeCat === 'TODAS' ? 'active-all' : ''}" data-cat="TODAS"><span>TODOS LOS PRODUCTOS</span><span class="chev">›</span></button>` +
     categories.map(cat => {
-      const open = cat.name === activeCat;
+      const open = openCategories.has(cat.name);
       const subs = getSubcats(cat.id);
+      const hasSubs = subs.length > 0;
       return `<div class="accordion-item ${open ? 'open' : ''}">
-        <button class="accordion-head" data-cat="${escapeHtml(cat.name)}"><span>${escapeHtml(cat.name)}</span><span class="chev">+</span></button>
+        <div class="accordion-row">
+          <button class="accordion-head accordion-select" data-cat="${escapeHtml(cat.name)}"><span>${escapeHtml(cat.name)}</span></button>
+          <button class="accordion-toggle" type="button" data-toggle-cat="${escapeHtml(cat.name)}" aria-expanded="${open ? 'true' : 'false'}" aria-label="DESPLEGAR ${escapeHtml(cat.name)}">${hasSubs ? (open ? '−' : '+') : ''}</button>
+        </div>
         <div class="accordion-body">${subs.length
-          ? subs.map(s => `<button class="subcat ${open && s.name === activeSub ? 'active' : ''}" data-cat="${escapeHtml(cat.name)}" data-sub="${escapeHtml(s.name)}">${escapeHtml(s.name)}</button>`).join('')
-          : `<button class="subcat ${open && activeSub === 'TODAS' ? 'active' : ''}" data-cat="${escapeHtml(cat.name)}" data-sub="TODAS">VER TODOS</button>`
+          ? subs.map(s => `<button class="subcat ${activeCat === cat.name && s.name === activeSub ? 'active' : ''}" data-cat="${escapeHtml(cat.name)}" data-sub="${escapeHtml(s.name)}">${escapeHtml(s.name)}</button>`).join('')
+          : `<button class="subcat ${activeCat === cat.name && activeSub === 'TODAS' ? 'active' : ''}" data-cat="${escapeHtml(cat.name)}" data-sub="TODAS">VER TODOS</button>`
         }</div>
       </div>`;
     }).join('');
 
   el.querySelector('[data-cat="TODAS"]').onclick = () => {
-    activeCat = 'TODAS'; activeSub = 'TODAS'; renderAccordion(); render();
+    activeCat = 'TODAS'; activeSub = 'TODAS'; setCatalogPanel(true); renderAccordion(); render();
   };
-  el.querySelectorAll('.accordion-head[data-cat]').forEach(btn => btn.onclick = () => {
+
+  // El nombre de la categoría filtra el catálogo.
+  el.querySelectorAll('.accordion-select[data-cat]').forEach(btn => btn.onclick = () => {
     const cat = btn.dataset.cat;
-    if (activeCat === cat) { activeCat = 'TODAS'; activeSub = 'TODAS'; }
-    else { activeCat = cat; activeSub = 'TODAS'; }
-    renderAccordion(); render();
+    activeCat = cat;
+    activeSub = 'TODAS';
+    openCategories.add(cat);
+    setCatalogPanel(true);
+    renderAccordion();
+    render();
   });
+
+  // El + / − solo despliega o contrae las subcategorías.
+  el.querySelectorAll('.accordion-toggle[data-toggle-cat]').forEach(btn => btn.onclick = (ev) => {
+    ev.stopPropagation();
+    const cat = btn.dataset.toggleCat;
+    if (openCategories.has(cat)) openCategories.delete(cat);
+    else openCategories.add(cat);
+    renderAccordion();
+  });
+
   el.querySelectorAll('.subcat').forEach(btn => btn.onclick = () => {
-    activeCat = btn.dataset.cat; activeSub = btn.dataset.sub; renderAccordion(); render();
+    activeCat = btn.dataset.cat;
+    activeSub = btn.dataset.sub;
+    openCategories.add(activeCat);
+    setCatalogPanel(true);
+    renderAccordion();
+    render();
   });
 }
 
@@ -375,7 +421,7 @@ function resetForm() {
   renderPreviews(); renderCropEditor();
 }
 
-function sourceOf(item) { return item.kind === 'new' ? item.file : item.url; }
+function sourceOf(item) { return item?.url || ''; }
 
 function openForm(p = null) {
   if (p) {
@@ -782,6 +828,9 @@ function openAdmin() {
   else { $('#loginModal').classList.remove('hidden'); $('#adminUser').focus(); }
 }
 
+$('#catalogToggle')?.addEventListener('click', () => setCatalogPanel(!catalogPanelOpen));
+setCatalogPanel(false);
+
 $('#search')?.addEventListener('input', render);
 $('#sort')?.addEventListener('change', render);
 $('#sortDiscount')?.addEventListener('change', render);
@@ -817,8 +866,24 @@ $('#folderInput')?.addEventListener('change', e => importFiles(e.target.files));
 $('#addBtn')?.addEventListener('click', () => openForm());
 $('#cancelEdit')?.addEventListener('click', () => { $('#productForm')?.classList.add('hidden'); resetForm(); });
 $('#pCat')?.addEventListener('change', updateSubcats);
-$('#pImages')?.addEventListener('change', e => addImages(e.target.files));
+$('#pImages')?.addEventListener('change', e => { addImages(e.target.files); e.target.value = ''; });
 $('#cropX')?.addEventListener('input', updateCrop);
+
+// ARRASTRAR Y SOLTAR FOTOS DESDE EL ESCRITORIO
+const photoDropZone = $('#photoDropZone');
+if (photoDropZone) {
+  ['dragenter','dragover'].forEach(type => photoDropZone.addEventListener(type, e => {
+    e.preventDefault(); e.stopPropagation(); photoDropZone.classList.add('drag-active');
+  }));
+  ['dragleave','drop'].forEach(type => photoDropZone.addEventListener(type, e => {
+    e.preventDefault(); e.stopPropagation(); photoDropZone.classList.remove('drag-active');
+  }));
+  photoDropZone.addEventListener('drop', e => {
+    const files = [...(e.dataTransfer?.files || [])].filter(f => f.type.startsWith('image/'));
+    if (files.length) addImages(files);
+  });
+}
+
 $('#cropY')?.addEventListener('input', updateCrop);
 $('#cropZoom')?.addEventListener('input', updateCrop);
 $('#cropReset')?.addEventListener('click', resetCrop);
